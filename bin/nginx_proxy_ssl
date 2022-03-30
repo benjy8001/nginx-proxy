@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+
+# Nginx proxy SSL certificates management tool
+
+# Configuration
+CERT_DIRECTORY="$(cd "$(dirname "$0")/../docker/certs" && pwd)"
+
+# Help message
+function usage {
+    cat <<EOT
+Usage: $(basename "$0") [command] <command arguments>
+
+Commands :
+  gen_authority     Generate local authority's root certificate
+    $(basename "$0") gen_authority [options]
+    Options :
+    -a  Authority certificate name (default=AUTHORITY)
+    -d  Certificate lifetime (days) (default=730 (2 years))
+
+  gen               Generate a certificate for a given domain name (using authority)
+    $(basename "$0") gen [options] <domain name>
+    Options :
+    -a  Authority certificate name (default=AUTHORITY)
+    -d  Certificate lifetime (days) (default=730 (2 years))
+EOT
+    exit
+}
+
+# Check dependencies
+function check_requirements {
+    which openssl >/dev/null 2>&1 && return
+    >&2 echo "Missing openssl"
+    exit 1
+}
+
+# Certificate template helper function
+function v3template {
+    cat <<EOT
+authorityKeyIdentifier=keyid,issuer
+basicConstraints=CA:FALSE
+keyUsage = digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = %%DOMAIN%%
+EOT
+    exit
+}
+
+# Generate local authority's root certificate
+function sub_gen_authority {
+    NAME='AUTHORITY'
+    DAYS=730
+    while getopts 'a:d:' opt; do
+        case $opt in
+            a) NAME=$OPTARG ;;
+            d) DAYS=$OPTARG ;;
+        esac
+    done
+
+    echo "Generating $NAME root certificate with $DAYS days lifetime"
+    if [ -f "$CERT_DIRECTORY/$NAME.crt" ]; then
+        read -p "Certificate already exists, overwrite ? (y/n) " -n 1 -r
+        [[ ! $REPLY =~ ^[Yy]$ ]] && exit 1
+    fi
+
+    openssl req -x509 -sha256 -nodes -days $DAYS -utf8 -newkey rsa:2048 -keyout "$CERT_DIRECTORY/$NAME.key" -out "$CERT_DIRECTORY/$NAME.crt" -subj "/C=FR/L=Amiens/O=B&D Picardie/CN=nginx proxy local authority"
+}
+
+# Generate a certificate for a given domain name (using authority)
+function sub_gen {
+    AUTHORITY='AUTHORITY'
+    DAYS=730
+    while getopts 'a:d:' opt; do
+        case $opt in
+            a) AUTHORITY=$OPTARG ;;
+            d) DAYS=$OPTARG ;;
+        esac
+    done
+    CN=$1
+    SUBJECT="/C=FR/L=Amiens/O=B&D Picardie/CN=$CN"
+
+    if [ -z "$1" ]; then
+        >&2 echo "Missing domain name"
+        exit 1
+    fi
+
+    if [ ! -f "$AUTHORITY.key" ] || [ ! -f "$AUTHORITY.crt" ]; then
+        >&2 echo "Missing assets for $AUTHORITY authority"
+        exit 1
+    fi
+
+    test -f "$CN.key" && >&2 echo "Info: $CN.key exists" || openssl genrsa -out "$CN.key" 2048
+    test -f "$CN.csr" && >&2 echo "Warning: $CN.csr exists" || openssl req -new -key "$CN.key" -out "$CN.csr" -sha256 -subj "$SUBJECT"
+    v3template | sed s/%%DOMAIN%%/$CN/g > "$CN.v3.ext" && >&2 echo "Created $CN.v3.ext"
+    test -f "$CN.crt" && >&2 echo "Warning: $CN.crt exists"
+    openssl x509 -req -days $DAYS -sha256 -in "$CN.csr" -CA "$AUTHORITY.crt" -CAkey "$AUTHORITY.key" -set_serial 01 -out "$CN.crt" -extfile "$CN.v3.ext"
+    rm -v "$CN.csr" "$CN.v3.ext"
+}
+
+# Main
+pushd "$CERT_DIRECTORY" >/dev/null
+check_requirements
+case $1 in -h|--help) usage ;; esac
+if [ -z "$1" ]; then usage; fi
+sub="sub_$1"
+if [ "$(type -t "$sub")" != "function" ]; then
+    >&2 printf "Unknown subcommand $1\n\n";
+    usage;
+fi
+shift;
+$sub "$@"

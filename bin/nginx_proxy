@@ -1,0 +1,39 @@
+#!/bin/bash
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do # resolve $SOURCE until the file is no longer a symlink
+  DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE" # if $SOURCE was a relative symlink, we need to resolve it relative to the path where the symlink file was located
+done
+DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+DOCKER_DIR="$DIR/../docker/"
+
+# check if nginx-proxy network exist or create it
+docker network inspect nginx-proxy > /dev/null
+if [  $? -ne "0" ] ; then
+    echo "creating docker network nginx-proxy"
+    docker network create nginx-proxy > /dev/null
+fi
+
+result=$(docker ps -f "ancestor=jwilder/nginx-proxy" -f "name=nginx-proxy" --format="{{.Names}}"|wc -l 2> /dev/null)
+if [  $result -eq "0" ] ; then
+     cd $DOCKER_DIR
+     docker-compose pull
+     echo "run nginx-proxy"
+     docker-compose  up -d
+     cd - > /dev/null
+else
+    if [ ! -z "$1" ] && [  $1 == "restart" ] ; then
+       cd $DOCKER_DIR
+       echo "restart nginx-proxy"
+       docker-compose  restart
+       cd - > /dev/null
+    fi
+     if [ ! -z "$1" ] && [  $1 == "stop" ] ; then
+       cd $DOCKER_DIR
+       echo "stoping nginx-proxy"
+       docker-compose  stop
+       cd - > /dev/null
+    fi
+fi
